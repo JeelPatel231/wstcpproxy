@@ -1,6 +1,6 @@
 pub mod handshake;
 pub mod parser;
-use anyhow;
+use nom::IResult;
 
 #[derive(Debug)]
 enum HttpMethod {
@@ -33,5 +33,5 @@ impl From<&[u8]> for HttpMethod {
 }
 
 pub trait HttpParser {
-    fn parse_websocket_key<'a>(input: &'a [u8]) -> anyhow::Result<&'a [u8]>;
+    fn parse_websocket_key<'a>(input: &'a [u8]) -> IResult<&'a [u8], &'a [u8]>;
 }

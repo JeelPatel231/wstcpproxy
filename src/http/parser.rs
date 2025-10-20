@@ -1,10 +1,10 @@
 use crate::http::{HttpMethod, HttpParser};
-use anyhow;
 use nom::{
     AsChar, IResult, Parser,
     bytes::streaming::{tag, take_while, take_while1},
     character::streaming::{digit1, space0, space1},
     combinator::map,
+    error::{Error, ErrorKind},
     multi::many0,
     sequence::{preceded, separated_pair, terminated},
 };
@@ -84,24 +84,24 @@ fn parse_header_line(input: &[u8]) -> IResult<&[u8], (&[u8], &[u8])> {
 
 pub struct HttpStreamParser;
 impl HttpParser for HttpStreamParser {
-    fn parse_websocket_key<'a>(input: &'a [u8]) -> anyhow::Result<&'a [u8]> {
-        let (_, headers) = map(
+    fn parse_websocket_key<'a>(input: &'a [u8]) -> IResult<&'a [u8], &'a [u8]> {
+        let (remaining, headers) = map(
             (
                 parse_start_line,
                 terminated(many0(parse_header_line), carriage_return),
             ),
             |(_, y)| y,
         )
-        .parse(input)
-        .map_err(|_| anyhow::anyhow!("Failed to parse HTTP Message"))?;
+        .parse(input)?;
 
-        headers
-            .into_iter()
-            .find(|(key, _)| {
-                let key = unsafe { std::str::from_utf8_unchecked(key) };
-                str::eq_ignore_ascii_case(key, "Sec-WebSocket-Key")
-            })
-            .map(|(_, y)| y)
-            .ok_or(anyhow::anyhow!("Failed to find header in request"))
+        let sec_key_header = headers.into_iter().find(|(key, _)| {
+            let key = unsafe { std::str::from_utf8_unchecked(key) };
+            str::eq_ignore_ascii_case(key, "Sec-WebSocket-Key")
+        });
+
+        match sec_key_header {
+            Some((_, value)) => Ok((remaining, value)),
+            None => Err(nom::Err::Error(Error::new(input, ErrorKind::Fail))),
+        }
     }
 }
