@@ -15,7 +15,6 @@ async fn handle_connection(mut stream: TcpStream) -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    println!("STARTED MAIN");
     let listener = TcpListener::bind("0.0.0.0:8000").await?;
 
     println!("Listening on 8000");

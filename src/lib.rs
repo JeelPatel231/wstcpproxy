@@ -1,10 +1,10 @@
 #[macro_export]
 macro_rules! debug_print {
-    ($($arg:tt)*) => {
+    ($($arg:expr),*) => {
         if cfg!(debug_assertions) {
-            dbg!($($arg)*)
+            dbg!($($arg),*)
         } else {
-            $($arg)*
+            ($($arg),*)
         }
     };
 }

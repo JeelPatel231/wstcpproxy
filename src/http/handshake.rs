@@ -37,7 +37,7 @@ pub async fn handle_http_upgrade(
                     bail!("HOW COME YOUR REQUEST STILL DOESN'T HAVE THE KEY HEADER?")
                 }
 
-                match debug_print!(HttpStreamParser::parse_websocket_key(&buffer)) {
+                match HttpStreamParser::parse_websocket_key(&buffer) {
                     Ok((rem, key)) => (rem.len(), key),
                     Err(nom::Err::Incomplete(_)) => continue,
                     Err(_) => bail!("Failed to parse HTTP for websocket key"),
