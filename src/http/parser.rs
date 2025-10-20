@@ -1,188 +1,107 @@
+use crate::http::{HttpMethod, HttpParser};
+use anyhow;
 use nom::{
     AsChar, IResult, Parser,
-    bytes::{complete::tag, take_while, take_while1},
-    character::{
-        char,
-        complete::{self, not_line_ending, space0},
-    },
-    error::ParseError,
+    bytes::streaming::{tag, take_while, take_while1},
+    character::streaming::{digit1, space0, space1},
+    combinator::map,
     multi::many0,
+    sequence::{preceded, separated_pair, terminated},
 };
 
-#[derive(Debug)]
-enum HttpMethod {
-    Get,
-    Head,
-    Post,
-    Put,
-    Delete,
-    Connect,
-    Options,
-    Trace,
-    Patch,
+/* nom start */
+fn word(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    take_while1(|c: u8| !c.is_space())(input)
 }
 
-type HTTPInput<'a> = &'a str;
-
-type MajorVersion = u8;
-type MinorVersion = u8;
-
-type HeaderKey<'a> = &'a str;
-type HeaderValue<'a> = &'a str;
-
-// TODO: implement full parser for this.
-#[derive(Debug)]
-pub struct HttpRequestMetadata<'a> {
-    pub method: HttpMethod,
-    pub path: &'a str,
-    pub version: (MajorVersion, MinorVersion),
-    pub headers: Vec<(HeaderKey<'a>, HeaderValue<'a>)>,
+fn carriage_return(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    tag("\r\n")(input)
 }
 
-fn is_ctl_or_separator(c: char) -> bool {
-    // Control chars: ASCII 0–31 or 127
-    if c.is_ascii_control() {
-        return true;
-    }
+fn parse_method(input: &[u8]) -> IResult<&[u8], HttpMethod> {
+    word(input).map(|(x, y)| (x, HttpMethod::from(y)))
+}
 
-    // Separators from RFC 2616, (HTTP 1.1)
-    matches!(
-        c,
-        '(' | ')'
-            | '<'
-            | '>'
-            | '@'
-            | ','
-            | ';'
-            | ':'
-            | '\\'
-            | '"'
-            | '/'
-            | '['
-            | ']'
-            | '?'
-            | '='
-            | '{'
-            | '}'
-            | ' '
-            | '\t'
+fn parse_http_version(input: &[u8]) -> IResult<&[u8], (u8, u8)> {
+    let version_parser = separated_pair(digit1, tag("."), digit1);
+
+    preceded(
+        tag("HTTP/"),
+        map(version_parser, |(x, y): (&[u8], &[u8])| -> (u8, u8) {
+            // digit1 parser already confirmed its a valid ascii digit and a number.
+
+            let x = std::str::from_utf8(x).unwrap();
+            let y = std::str::from_utf8(y).unwrap();
+
+            let x: u8 = x.parse().unwrap();
+            let y: u8 = y.parse().unwrap();
+
+            return (x, y);
+        }),
+    )
+    .parse(input)
+}
+
+fn parse_start_line(input: &[u8]) -> IResult<&[u8], ()> {
+    map(
+        (
+            terminated(parse_method, space1),
+            terminated(word, space1),
+            terminated(parse_http_version, carriage_return),
+        ),
+        |_| (),
+    )
+    .parse(input)
+}
+
+/* Start line done */
+fn header_key_char(c: u8) -> bool {
+    // RFC 7230: token = 1*tchar
+    matches!(c,
+        b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' |
+        b'-' | b'.' | b'^' | b'_' | b'`' | b'|' | b'~' | b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z'
     )
 }
 
-fn is_token_char(c: char) -> bool {
-    c.is_ascii() && !is_ctl_or_separator(c)
+fn header_value_char(c: u8) -> bool {
+    // accept any visible ASCII or space except CR/LF
+    c != b'\r' && c != b'\n'
 }
 
-fn parse_carriage_return<'a, E: ParseError<&'a str>>(
-    input: &'a str,
-) -> IResult<&'a str, &'a str, E> {
-    tag("\r\n").parse(input)
+fn parse_header_line(input: &[u8]) -> IResult<&[u8], (&[u8], &[u8])> {
+    separated_pair(
+        terminated(take_while1(|x: u8| header_key_char(x)), space0),
+        tag(":"),
+        terminated(
+            preceded(space0, take_while(header_value_char)),
+            carriage_return,
+        ),
+    )
+    .parse(input)
 }
 
-fn token<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, &'a str, E> {
-    take_while1(is_token_char).parse(input)
-}
+/* nom end */
 
-fn parse_method<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, HttpMethod, E> {
-    take_while(|x: char| x.is_alpha())
+pub struct HttpStreamParser;
+impl HttpParser for HttpStreamParser {
+    fn parse_websocket_key<'a>(input: &'a [u8]) -> anyhow::Result<&'a [u8]> {
+        let (_, headers) = map(
+            (
+                parse_start_line,
+                terminated(many0(parse_header_line), carriage_return),
+            ),
+            |(_, y)| y,
+        )
         .parse(input)
-        .map(|(rem, parsed)| {
-            // method names are case sensitive
-            let method = match parsed {
-                "GET" => HttpMethod::Get,
-                "HEAD" => HttpMethod::Head,
-                "POST" => HttpMethod::Post,
-                "PUT" => HttpMethod::Put,
-                "DELETE" => HttpMethod::Delete,
-                "CONNECT" => HttpMethod::Connect,
-                "OPTIONS" => HttpMethod::Options,
-                "TRACE" => HttpMethod::Trace,
-                "PATCH" => HttpMethod::Patch,
-                _ => unreachable!(),
-            };
+        .map_err(|_| anyhow::anyhow!("Failed to parse HTTP Message"))?;
 
-            return (rem, method);
-        })
-}
-
-fn parse_http_version<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, (u8, u8), E> {
-    let (input, _) = tag("HTTP/").parse(input)?;
-
-    let (input, major_version) = complete::digit1(input)
-        .map(|(rem, parsed)| (rem, u8::from_str_radix(parsed, 10).unwrap()))?;
-
-    let (input, _) = char('.').parse(input)?;
-
-    let (input, minor_version) = complete::digit1(input)
-        .map(|(rem, parsed)| (rem, u8::from_str_radix(parsed, 10).unwrap()))?;
-
-    return Ok((input, (major_version, minor_version)));
-}
-
-fn parse_header_key<'a, E: ParseError<&'a str>>(
-    input: &'a str,
-) -> IResult<&'a str, HeaderKey<'a>, E> {
-    token::<E>(input).map(|(rem, parsed)| (rem, parsed))
-}
-
-fn single_header<'a, E: ParseError<&'a str>>(
-    input: &'a str,
-) -> IResult<&'a str, (HeaderKey<'a>, HeaderValue<'a>), E> {
-    let (input, header_key) = parse_header_key(input)?;
-    let (input, _) = space0(input)?;
-    let (input, _) = char(':').parse(input)?;
-    let (input, _) = space0(input)?;
-    let (input, header_value) = parse_header_value(input)?;
-    let (input, _) = space0(input)?;
-    let (input, _) = parse_carriage_return(input)?;
-
-    return Ok((input, (header_key, header_value)));
-}
-
-fn parse_until_whitespace<'a, E: ParseError<&'a str>>(
-    input: &'a str,
-) -> IResult<&'a str, &'a str, E> {
-    // just take everything until a space is seen
-    take_while(|x: char| !x.is_ascii_whitespace())
-        .parse(input)
-        .map(|(rem, parsed)| (rem, parsed))
-}
-
-// TODO: not RFC compliant
-fn parse_header_value<'a, E: ParseError<&'a str>>(
-    input: &'a str,
-) -> IResult<&'a str, HeaderValue<'a>, E> {
-    // THIS NEEDS TO BE FIXED AS PER HTTP RFC, but parse everything for now.
-    not_line_ending
-        .parse(input)
-        .map(|(rem, parsed)| (rem, parsed))
-}
-
-fn optional_multiple_headers<'a, E: ParseError<&'a str>>(
-    input: &'a str,
-) -> IResult<&'a str, Vec<(HeaderKey<'a>, HeaderValue<'a>)>, E> {
-    many0(single_header).parse(input)
-}
-
-pub fn parse_http_message<'a, E: ParseError<&'a str>>(
-    input: HTTPInput<'a>,
-) -> IResult<HTTPInput<'a>, HttpRequestMetadata<'a>, E> {
-    let (input, method) = parse_method(input)?;
-    let (input, _) = char(' ').parse(input)?;
-    let (input, path) = parse_until_whitespace(input)?;
-    let (input, _) = char(' ').parse(input)?;
-    let (input, version) = parse_http_version(input)?;
-    let (input, _) = parse_carriage_return(input)?;
-    let (input, headers) = optional_multiple_headers(input)?;
-    let (input, _) = parse_carriage_return(input)?;
-
-    return Ok((
-        input,
-        HttpRequestMetadata {
-            method,
-            path,
-            version,
-            headers,
-        },
-    ));
+        headers
+            .into_iter()
+            .find(|(key, _)| {
+                let key = unsafe { std::str::from_utf8_unchecked(key) };
+                str::eq_ignore_ascii_case(key, "Sec-WebSocket-Key")
+            })
+            .map(|(_, y)| y)
+            .ok_or(anyhow::anyhow!("Failed to find header in request"))
+    }
 }
