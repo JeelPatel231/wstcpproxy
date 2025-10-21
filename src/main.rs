@@ -10,7 +10,7 @@ use tokio::{
 };
 use wstcpproxy::debug_print;
 
-const NETWORK_BUFFER: usize = 2048;
+const NETWORK_BUFFER: usize = 8192;
 
 async fn handle_connection(mut stream: TcpStream) -> anyhow::Result<()> {
     let mut buffer = BytesMut::with_capacity(NETWORK_BUFFER);
@@ -26,10 +26,13 @@ async fn handle_as_websocket(stream: TcpStream) -> anyhow::Result<()> {
     ws.set_auto_pong(true);
     let mut ws = FragmentCollector::new(ws);
 
-    let mut tcp_conn = TcpStream::connect("httpbin.org:80").await?;
-    println!("CONNETED");
+    let tcp_conn = TcpStream::connect("httpbin.org:81").await?;
 
-    let mut con_buf = [0u8; 1024];
+    println!("Connected!");
+
+    let (reader, mut writer) = tcp_conn.into_split();
+
+    let mut con_buf = [0u8; NETWORK_BUFFER];
 
     loop {
         tokio::select! {
@@ -44,16 +47,15 @@ async fn handle_as_websocket(stream: TcpStream) -> anyhow::Result<()> {
                     OpCode::Binary => {
                         let payload = frame.payload.as_bytes();
                         debug_print!(&payload);
-                        tcp_conn.write(payload).await?;
-                        tcp_conn.flush().await?;
-                        debug_print!("DATA WAS FLUSHED");
+                        writer.write(payload).await?;
+                        writer.flush().await?;
                     }
                     _ => {}
                 }
             },
-            _ = tcp_conn.readable() => {
+            _ = reader.readable() => {
                 debug_print!("Ready for Reading from socket!");
-                match tcp_conn.try_read(&mut con_buf) {
+                match reader.try_read(&mut con_buf) {
                     Ok(0) => bail!("Stream closed amidst reading"),
                     Ok(n) => {
                         let new = &con_buf[..n];
