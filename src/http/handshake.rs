@@ -7,7 +7,6 @@ use std::io::{IoSlice, Result, Write};
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use wstcpproxy::debug_print;
 
 const HANDSHAKE_RESPONSE_PARTIAL: &[u8] = b"\
 HTTP/1.1 101 Switching Protocols\r\n\
@@ -43,7 +42,7 @@ pub async fn handle_http_upgrade(
                     Err(_) => bail!("Failed to parse HTTP for websocket key"),
                 }
             }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 continue;
             }
             Err(e) => bail!(e),
