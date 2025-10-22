@@ -6,7 +6,7 @@ use fastwebsockets::{FragmentCollector, Frame, OpCode, WebSocket};
 use nom::AsBytes;
 use tokio::{
     io::{self, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::{TcpListener, TcpStream, UnixStream},
 };
 use wstcpproxy::debug_print;
 
@@ -15,6 +15,8 @@ const NETWORK_BUFFER: usize = 8192;
 async fn handle_connection(mut stream: TcpStream) -> anyhow::Result<()> {
     let mut buffer = BytesMut::with_capacity(NETWORK_BUFFER);
     handle_http_upgrade(&mut stream, &mut buffer).await?;
+    // MISTAKE: bytes after header are already consumed and live inside the [buffer]. 
+    // those wont be received by handle_as_websocket function.
     handle_as_websocket(stream).await?;
     Ok(())
 }
@@ -26,7 +28,8 @@ async fn handle_as_websocket(stream: TcpStream) -> anyhow::Result<()> {
     ws.set_auto_pong(true);
     let mut ws = FragmentCollector::new(ws);
 
-    let tcp_conn = TcpStream::connect("httpbin.org:81").await?;
+    let tcp_conn = TcpStream::connect("localhost:5900").await?;
+    // let tcp_conn = UnixStream::connect("/tmp/vnc_socket").await?;
 
     println!("Connected!");
 
